@@ -162,7 +162,7 @@ def count_links(message):
     return len(LINK_PATTERN.findall(message))
 
 
-def spam_reason(message):
+def spam_reason(message, extra_phrases=()):
     """Return why a message looks like spam, or None.
 
     Checks known spam phrases, keyword stuffing (one word
@@ -171,7 +171,7 @@ def spam_reason(message):
     if not message:
         return None
     lowered = message.lower()
-    for phrase in SPAM_PHRASES:
+    for phrase in SPAM_PHRASES + tuple(extra_phrases):
         if phrase in lowered:
             return "message contains the spam phrase %r" % phrase
     words = [word.lower() for word in WORD_PATTERN.findall(message)]
@@ -349,7 +349,8 @@ def audit(submissions, as_of,
           unanswered_days=DEFAULT_UNANSWERED_DAYS,
           min_words=DEFAULT_MIN_WORDS,
           burst_count=DEFAULT_BURST_COUNT,
-          burst_hours=DEFAULT_BURST_HOURS):
+          burst_hours=DEFAULT_BURST_HOURS,
+          extra_spam_phrases=()):
     """Audit a parsed submission list and return findings."""
     findings = []
     spam_ids = set()
@@ -382,7 +383,7 @@ def audit(submissions, as_of,
     for submission in submissions:
         submission_id = submission["id"]
         message = submission["message"]
-        reason = spam_reason(message)
+        reason = spam_reason(message, extra_spam_phrases)
         if reason is not None:
             findings.append(Finding(
                 submission_id, "spam-pattern", "error", reason))
@@ -624,6 +625,8 @@ def build_parser():
                         default=DEFAULT_BURST_HOURS,
                         help="the burst window in hours "
                         "(default: %d)" % DEFAULT_BURST_HOURS)
+    parser.add_argument("--spam-phrases-file", default=None,
+                        help="UTF-8 file of extra spam phrases, one per line; blanks and # comments ignored")
     parser.add_argument("--as-of", default=None,
                         help="date to compare timestamps against, "
                         "for example 2026-11-18 (default: now)")
@@ -673,6 +676,16 @@ def main(argv=None):
             print("error: --as-of %r is not a readable date"
                   % args.as_of, file=sys.stderr)
             return 2
+    extra_phrases = ()
+    if args.spam_phrases_file is not None:
+        try:
+            with open(args.spam_phrases_file, encoding="utf-8") as handle:
+                extra_phrases = tuple(
+                    line.strip().lower() for line in handle
+                    if line.strip() and not line.strip().startswith("#"))
+        except (OSError, UnicodeError) as exc:
+            print("error: cannot read spam phrases file: %s" % exc, file=sys.stderr)
+            return 2
     try:
         submissions, findings = parse_csv(args.csv_file, as_of)
     except ValueError as exc:
@@ -684,7 +697,8 @@ def main(argv=None):
                           unanswered_days=args.unanswered_days,
                           min_words=args.min_words,
                           burst_count=args.burst_count,
-                          burst_hours=args.burst_hours))
+                          burst_hours=args.burst_hours,
+                          extra_spam_phrases=extra_phrases))
     summary = summarize(submissions, findings, as_of)
     if args.json:
         report = render_json(submissions, findings, summary)
