@@ -366,3 +366,18 @@ flags, and `--check` and `--strict` exit codes. The same
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+### Site-specific spam phrases
+
+Add phrases from a UTF-8 text file without editing or replacing the built-in list:
+
+```sh
+python wp_form_doctor.py submissions.csv --spam-phrases-file phrases.txt --json --check
+```
+
+Put one phrase on each line. Leading/trailing whitespace, blank lines and lines
+starting with `#` are ignored; matching is case-insensitive. For example, a line
+`free iphone` flags a message containing that phrase. The list applies only to
+that invocation. A missing, unreadable or invalid UTF-8 phrase file exits 2
+without producing a report.

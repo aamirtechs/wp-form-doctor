@@ -6,7 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
@@ -719,6 +719,37 @@ class TestCli(unittest.TestCase):
             "examples", "clean.csv")
         code, text = run_cli([path, "--burst-hours", "0"])
         self.assertEqual(code, 2)
+
+
+
+class TestSpamPhraseFile(unittest.TestCase):
+    def test_custom_phrase_adds_to_builtins_without_leaking_between_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = write_csv(HEADER + row(message="Please send me a free iphone today."), tmp)
+            phrases = os.path.join(tmp, "phrases.txt")
+            with open(phrases, "w", encoding="utf-8") as handle:
+                handle.write("  # local phrases\n\n  FREE IPHONE  \n")
+            args = [csv_path, "--json", "--check", "--as-of", "2026-11-18"]
+            code, plain = run_cli(args)
+            self.assertEqual(code, 0)
+            self.assertNotIn('spam-pattern', [x['rule'] for x in json.loads(plain)['findings']])
+            code, custom = run_cli(args + ["--spam-phrases-file", phrases])
+            self.assertEqual(code, 1)
+            self.assertIn('spam-pattern', [x['rule'] for x in json.loads(custom)['findings']])
+            code, again = run_cli(args)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(again), json.loads(plain))
+            self.assertIsNotNone(doctor.spam_reason("buy cheap widgets", ("free iphone",)))
+
+    def test_missing_phrase_file_exits_two_without_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = write_csv(HEADER + row(), tmp)
+            error = io.StringIO()
+            with redirect_stderr(error):
+                code, output = run_cli([csv_path, "--spam-phrases-file", os.path.join(tmp, "missing.txt")])
+            self.assertEqual(code, 2)
+            self.assertEqual(output, "")
+            self.assertIn("spam", error.getvalue().lower())
 
 
 if __name__ == "__main__":
