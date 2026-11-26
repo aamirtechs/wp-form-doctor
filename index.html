@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WP Form Doctor - AamirTechs</title>
+<style>
+:root{--navy:#0b1f3a;--gold:#d4a72c;--bg:#f6f8fb;--ink:#1c2733;--muted:#5b6b7c;--line:#d9e1ea}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--navy);color:#fff;padding:28px 20px;border-bottom:4px solid var(--gold)}
+header .wrap{max-width:880px;margin:0 auto}
+header h1{margin:0 0 6px;font-size:1.6rem}
+header p{margin:0;color:#c8d4e4}
+main{max-width:880px;margin:24px auto;padding:0 20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(11,31,58,.08)}
+label{display:block;font-weight:600;margin:14px 0 6px}
+.card>label:first-child{margin-top:0}
+textarea{width:100%;min-height:180px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem}
+input[type=text],input[type=number],select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:.95rem;width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:4px}
+.grid label{margin:0 0 6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+button{background:var(--navy);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:.95rem;cursor:pointer}
+button.alt{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+button.gold{background:var(--gold);color:#0b1f3a;font-weight:600}
+pre{background:#0b1f3a;color:#eef3f9;border-radius:8px;padding:16px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;min-height:60px;font-size:.85rem}
+footer{max-width:880px;margin:0 auto 32px;padding:0 20px;color:var(--muted);font-size:.9rem}
+footer a{color:var(--navy)}
+.hint{color:var(--muted);font-size:.85rem;margin-top:6px;font-weight:400}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>WP Form Doctor</h1><p>Audit a WordPress form submissions CSV export for the problems that quietly cost a site its leads: spam patterns, link drops, submissions too fast for a human to type, duplicate submissions, bursts from one sender, and genuine leads that were never answered. It also scores every form (submissions, spam, unanswered leads, and average time to answer) so a site owner can see which form is leaking leads and which one is drowning in spam.</p></div></header>
+<main><div class="card">
+<label for="file">Input CSV file</label>
+<input type="file" id="file" accept=".csv,text/csv">
+<label for="input">Or paste the submissions CSV</label>
+<textarea id="input" spellcheck="false" placeholder="Paste a form submissions CSV export here, or load the sample."></textarea>
+<label>Options</label>
+<div class="grid">
+<div><label for="opt-seconds">Min seconds <span class="hint">(--min-seconds)</span></label><input type="number" id="opt-seconds" step="1" value="5"></div>
+<div><label for="opt-links">Max links <span class="hint">(--max-links)</span></label><input type="number" id="opt-links" step="1" value="2"></div>
+<div><label for="opt-days">Unanswered days <span class="hint">(--unanswered-days)</span></label><input type="number" id="opt-days" step="any" value="3"></div>
+<div><label for="opt-words">Min words <span class="hint">(--min-words)</span></label><input type="number" id="opt-words" step="1" value="3"></div>
+<div><label for="opt-burst-count">Burst count <span class="hint">(--burst-count)</span></label><input type="number" id="opt-burst-count" step="1" value="3"></div>
+<div><label for="opt-burst-hours">Burst hours <span class="hint">(--burst-hours)</span></label><input type="number" id="opt-burst-hours" step="1" value="24"></div>
+<div><label for="opt-asof">As-of date <span class="hint">(--as-of, blank means now)</span></label><input type="text" id="opt-asof" placeholder="2026-11-18"></div>
+</div>
+<div class="row"><button class="gold" id="run" type="button">Run check</button><button class="alt" id="sample" type="button">Load sample</button><button class="alt" id="sample-clean" type="button">Load clean sample</button><button class="alt" id="sample-warn" type="button">Load warnings sample</button><button class="alt" id="download" type="button">Download report</button></div>
+<label for="out">Report</label>
+<pre id="out">Your report will appear here.</pre>
+</div></main>
+<footer>
+<p>Built by AamirTechs. <a href="https://aamirtechs.github.io/">All tools</a> | <a href="https://github.com/aamirtechs/wp-form-doctor">Source</a></p>
+<p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+<script id="core">
+// Pure logic port of wp_form_doctor.py. No DOM access in this block.
+function fmtF(x, digits) {
+  // Python "%.<digits>f" formatting of a double: round half even on
+  // the exact binary value.
+  if (typeof x !== "number" || !isFinite(x)) return String(x);
+  var neg = x < 0 || Object.is(x, -0);
+  var ax = Math.abs(x);
+  var buf = new DataView(new ArrayBuffer(8));
+  buf.setFloat64(0, ax);
+  var hi = buf.getUint32(0), lo = buf.getUint32(4);
+  var expBits = (hi >>> 20) & 0x7ff;
+  var mant, e2;
+  if (expBits === 0) { mant = BigInt(hi & 0xfffff) * 4294967296n + BigInt(lo); e2 = -1074; }
+  else { mant = BigInt((hi & 0xfffff) | 0x100000) * 4294967296n + BigInt(lo); e2 = expBits - 1075; }
+  var num = mant * (10n ** BigInt(digits));
+  var den = 1n;
+  if (e2 >= 0) num *= (2n ** BigInt(e2)); else den = 2n ** BigInt(-e2);
+  var q = num / den, r = num % den;
+  if (r * 2n > den || (r * 2n === den && (q & 1n) === 1n)) q += 1n;
+  var s = q.toString();
+  if (digits > 0) {
+    while (s.length <= digits) s = "0" + s;
+    s = s.slice(0, s.length - digits) + "." + s.slice(s.length - digits);
+  }
+  return (neg ? "-" : "") + s;
+}
+function pyRepr(v) {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "string") {
+    var esc = v.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+    if (v.indexOf("'") >= 0 && v.indexOf('"') < 0) return '"' + esc + '"';
+    return "'" + esc.replace(/'/g, "\\'") + "'";
+  }
+  return String(v);
+}
+function parseCsvRows(text) {
+  // Mirrors Python csv.reader with the default dialect.
+  var rows = [], row = [], field = "", state = 0, i, ch;
+  text = String(text).replace(/^\uFEFF/, "");
+  function endField() { row.push(field); field = ""; state = 0; }
+  function endRow() { endField(); rows.push(row); row = []; }
+  for (i = 0; i < text.length; i++) {
+    ch = text[i];
+    if (state === 2) {
+      if (ch === '"') state = 3;
+      else field += ch;
+    } else if (state === 3) {
+      if (ch === '"') { field += '"'; state = 2; }
+      else if (ch === ",") endField();
+      else if (ch === "\n") endRow();
+      else if (ch === "\r") { if (text[i + 1] === "\n") i++; endRow(); }
+      else { field += ch; state = 1; }
+    } else if (state === 0 && ch === '"') {
+      state = 2;
+    } else if (ch === ",") endField();
+    else if (ch === "\n") endRow();
+    else if (ch === "\r") { if (text[i + 1] === "\n") i++; endRow(); }
+    else { field += ch; state = 1; }
+  }
+  if (state !== 0 || field !== "" || row.length) endRow();
+  return rows;
+}
+function daysFromCivil(y, m, d) {
+  y -= m <= 2 ? 1 : 0;
+  var era = Math.floor(y / 400);
+  var yoe = y - era * 400;
+  var mp = (m + 9) % 12;
+  var doy = Math.floor((153 * mp + 2) / 5) + d - 1;
+  var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+function validDate(y, mo, d) {
+  if (mo < 1 || mo > 12 || d < 1) return false;
+  var leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0));
+  var dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  return d <= dim;
+}
+function makeTs(y, mo, d, h, mi, s, micro, offMin) {
+  var secs = daysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s - offMin * 60;
+  return { micro: BigInt(secs) * 1000000n + BigInt(micro), y: y, mo: mo, d: d, h: h, mi: mi };
+}
+function isoParse(text) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})(?:.(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:\s*([+-]\d{2}(?::?\d{2})?(?::?\d{2})?))?)?$/.exec(text);
+  if (m) {
+    var y = +m[1], mo = +m[2], d = +m[3];
+    if (!validDate(y, mo, d)) return null;
+    var h = m[4] !== undefined ? +m[4] : 0;
+    var mi = m[5] !== undefined ? +m[5] : 0;
+    var s = m[6] !== undefined ? +m[6] : 0;
+    if (h > 23 || mi > 59 || s > 59) return null;
+    var micro = m[7] ? parseInt((m[7] + "000000").slice(0, 6), 10) : 0;
+    var offMin = 0;
+    if (m[8]) {
+      var sign = m[8][0] === "-" ? -1 : 1;
+      var digs = m[8].slice(1).replace(/:/g, "");
+      var oh = +digs.slice(0, 2);
+      var om = digs.length >= 4 ? +digs.slice(2, 4) : 0;
+      var os = digs.length >= 6 ? +digs.slice(4, 6) : 0;
+      if (oh > 23 || om > 59 || os > 59) return null;
+      offMin = sign * (oh * 60 + om + os / 60);
+    }
+    return makeTs(y, mo, d, h, mi, s, micro, offMin);
+  }
+  if (/^\d{8}$/.test(text)) {
+    var y2 = +text.slice(0, 4), mo2 = +text.slice(4, 6), d2 = +text.slice(6, 8);
+    if (validDate(y2, mo2, d2)) return makeTs(y2, mo2, d2, 0, 0, 0, 0, 0);
+  }
+  return null;
+}
+function parseTimestamp(text) {
+  if (text === null || text === undefined) return null;
+  text = String(text).trim();
+  if (!text) return null;
+  var candidate = text;
+  if (candidate.endsWith("Z") || candidate.endsWith("z")) candidate = candidate.slice(0, -1) + "+00:00";
+  var parsed = isoParse(candidate);
+  if (parsed) return parsed;
+  var pats = [
+    { re: /^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2}):(\d{1,2})$/, map: "y" },
+    { re: /^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2})$/, map: "y" },
+    { re: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, map: "y" },
+    { re: /^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, map: "d" },
+    { re: /^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, map: "m" },
+    { re: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, map: "d" },
+    { re: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, map: "m" }
+  ];
+  for (var i = 0; i < pats.length; i++) {
+    var mm = pats[i].re.exec(candidate);
+    if (!mm) continue;
+    var g = mm.slice(1).map(Number);
+    var Y, Mo, D, H = 0, Mi = 0, S = 0;
+    if (pats[i].map === "y") { Y = g[0]; Mo = g[1]; D = g[2]; if (g.length > 3) { H = g[3]; Mi = g[4]; } if (g.length > 5) S = g[5]; }
+    else if (pats[i].map === "d") { D = g[0]; Mo = g[1]; Y = g[2]; if (g.length > 3) { H = g[3]; Mi = g[4]; } }
+    else { Mo = g[0]; D = g[1]; Y = g[2]; if (g.length > 3) { H = g[3]; Mi = g[4]; } }
+    if (!validDate(Y, Mo, D) || H > 23 || Mi > 59 || S > 59) continue;
+    return makeTs(Y, Mo, D, H, Mi, S, 0, 0);
+  }
+  return null;
+}
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
+function padYear(y) { var s = String(y); while (s.length < 4) s = "0" + s; return s; }
+function fmtTs(ts) { return padYear(ts.y) + "-" + pad2(ts.mo) + "-" + pad2(ts.d) + " " + pad2(ts.h) + ":" + pad2(ts.mi); }
+function nowTs() {
+  var n = new Date();
+  return { micro: BigInt(n.getTime()) * 1000n, y: n.getUTCFullYear(), mo: n.getUTCMonth() + 1, d: n.getUTCDate(), h: n.getUTCHours(), mi: n.getUTCMinutes() };
+}
+function findColumn(header, names) {
+  for (var i = 0; i < names.length; i++) if (header.indexOf(names[i]) >= 0) return names[i];
+  return null;
+}
+function hoursBetween(start, end) {
+  if (start === null || end === null) return null;
+  return Number(end.micro - start.micro) / 1000000 / 3600.0;
+}
+var EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+var LINK_PATTERN = /https?:\/\/\S+|www\.\S+/gi;
+var WORD_PATTERN = /[A-Za-z0-9']+/g;
+var SPAM_PHRASES = ["buy cheap", "viagra", "cialis", "casino", "crypto",
+  "bitcoin", "seo services", "guaranteed ranking", "make money fast",
+  "work from home", "free followers", "loan approval", "weight loss",
+  "lottery winner", "inheritance", "double your money"];
+var UNANSWERED_WARNING_HOURS = 24;
+function countLinks(message) {
+  if (!message) return 0;
+  var matches = String(message).match(LINK_PATTERN);
+  return matches ? matches.length : 0;
+}
+function spamReason(message) {
+  if (!message) return null;
+  var lowered = String(message).toLowerCase();
+  for (var i = 0; i < SPAM_PHRASES.length; i++) {
+    if (lowered.indexOf(SPAM_PHRASES[i]) >= 0) {
+      return "message contains the spam phrase " + pyRepr(SPAM_PHRASES[i]);
+    }
+  }
+  var words = (String(message).match(WORD_PATTERN) || []).map(function (w) { return w.toLowerCase(); });
+  var counts = {};
+  words.forEach(function (w) { counts[w] = (counts[w] || 0) + 1; });
+  var keys = Object.keys(counts).sort();
+  for (var j = 0; j < keys.length; j++) {
+    if (counts[keys[j]] >= 4) {
+      return "message repeats the word " + pyRepr(keys[j]) + " " + counts[keys[j]] +
+        " times, which reads as keyword stuffing";
+    }
+  }
+  var chars = Array.from(String(message));
+  var letters = chars.filter(function (ch) { return /\p{L}/u.test(ch); });
+  if (chars.length >= 20 && letters.length &&
+      letters.every(function (ch) { return ch.toUpperCase() === ch && ch.toLowerCase() !== ch; })) {
+    return "message is written entirely in capital letters";
+  }
+  return null;
+}
+function normalizeMessage(message) {
+  return String(message).toLowerCase().split(/\s+/).filter(function (w) { return w !== ""; }).join(" ");
+}
+function F(submission, rule, severity, message) { return { submission: submission, rule: rule, severity: severity, message: message }; }
+function findingStr(f) { return f.severity.toUpperCase() + " [" + f.rule + "] " + f.submission + ": " + f.message; }
+function parseCsv(text, asOf) {
+  var rows = parseCsvRows(text);
+  if (!rows.length) throw new Error("input is empty, no header row found");
+  var header = rows[0].map(function (name) { return name.trim(); });
+  function need(names, label) {
+    var col = findColumn(header, names);
+    if (col === null) throw new Error("input has no " + label + " column (header is: " + header.join(", ") + ")");
+    return col;
+  }
+  var idColumn = need(["submission_id", "id", "entry_id"], "submission_id or id");
+  var emailColumn = need(["email", "email_address"], "email");
+  var submittedColumn = need(["submitted_at", "created_at", "submitted", "date", "created"], "submitted_at");
+  var formColumn = findColumn(header, ["form", "form_name"]);
+  var nameColumn = findColumn(header, ["name", "full_name", "your_name"]);
+  var messageColumn = findColumn(header, ["message", "message_text", "your_message", "comments"]);
+  var answeredColumn = findColumn(header, ["answered_at", "replied_at", "answered", "replied", "reply_date"]);
+  var ipColumn = findColumn(header, ["ip", "ip_address"]);
+  var findings = [], submissions = [], seenIds = {};
+  for (var idx = 1; idx < rows.length; idx++) {
+    var row = rows[idx];
+    var lineNumber = idx + 1;
+    if (!row.length || row.every(function (cell) { return !cell.trim(); })) continue;
+    if (row.length !== header.length) {
+      findings.push(F("row " + lineNumber, "malformed-row", "error",
+        "row has " + row.length + " fields but the header has " + header.length + ", so the row was skipped"));
+      continue;
+    }
+    var cells = {};
+    header.forEach(function (name, j) { cells[name] = row[j].trim(); });
+    var submissionId = cells[idColumn];
+    if (!submissionId) {
+      findings.push(F("row " + lineNumber, "missing-submission-id", "error",
+        "row has no submission id, so the submission cannot be matched to a form"));
+      submissionId = "row " + lineNumber;
+    }
+    if (seenIds[submissionId]) {
+      findings.push(F(submissionId, "duplicate-submission-id", "error", "submission id appears more than once in the export"));
+    } else seenIds[submissionId] = 1;
+    var email = cells[emailColumn];
+    if (!email) {
+      findings.push(F(submissionId, "missing-email", "error", "submission has no email, so it cannot be answered or matched to a sender"));
+    } else if (!EMAIL_PATTERN.test(email)) {
+      findings.push(F(submissionId, "invalid-email", "error", "email " + pyRepr(email) + " is not a valid email address"));
+    }
+    var submitted = null;
+    var submittedRaw = cells[submittedColumn];
+    if (submittedRaw) {
+      submitted = parseTimestamp(submittedRaw);
+      if (submitted === null) findings.push(F(submissionId, "invalid-timestamp", "error", "submitted date " + pyRepr(submittedRaw) + " is not a readable date"));
+    }
+    var answered = null;
+    var answeredRaw = answeredColumn ? cells[answeredColumn] : "";
+    if (answeredRaw) {
+      answered = parseTimestamp(answeredRaw);
+      if (answered === null) findings.push(F(submissionId, "invalid-timestamp", "error", "answered date " + pyRepr(answeredRaw) + " is not a readable date"));
+    }
+    if (submitted !== null && submitted.micro > asOf.micro) {
+      findings.push(F(submissionId, "future-timestamp", "error",
+        "submitted date " + fmtTs(submitted) + " is after the as-of date " + fmtTs(asOf)));
+    }
+    if (submitted !== null && answered !== null && answered.micro < submitted.micro) {
+      findings.push(F(submissionId, "impossible-dates", "error",
+        "answered date " + fmtTs(answered) + " is before the submission was made " + fmtTs(submitted)));
+    }
+    submissions.push({
+      id: submissionId, form: formColumn ? cells[formColumn] : "",
+      name: nameColumn ? cells[nameColumn] : "", email: email,
+      message: messageColumn ? cells[messageColumn] : "",
+      submitted: submitted, answered: answered,
+      ip: ipColumn ? cells[ipColumn] : "", line: lineNumber
+    });
+  }
+  return { submissions: submissions, findings: findings };
+}
+function audit(submissions, asOf, o) {
+  var findings = [];
+  var spamIds = {};
+  var tooFastIds = {};
+  ["email", "ip"].forEach(function (keyName) {
+    var groups = {};
+    submissions.forEach(function (s) {
+      var key = s[keyName].trim().toLowerCase();
+      if (key && s.submitted !== null) (groups[key] = groups[key] || []).push(s);
+    });
+    Object.keys(groups).forEach(function (key) {
+      var ordered = groups[key].slice().sort(function (a, b) {
+        return a.submitted.micro < b.submitted.micro ? -1 : (a.submitted.micro > b.submitted.micro ? 1 : 0);
+      });
+      for (var i = 0; i + 1 < ordered.length; i++) {
+        var gap = Number(ordered[i + 1].submitted.micro - ordered[i].submitted.micro) / 1000000;
+        if (gap >= 0 && gap < o.minSeconds && tooFastIds[ordered[i + 1].id] === undefined) {
+          tooFastIds[ordered[i + 1].id] = gap;
+        }
+      }
+    });
+  });
+  var seenMessages = {}, duplicateIds = {};
+  submissions.forEach(function (s) {
+    var email = s.email.trim().toLowerCase();
+    var message = normalizeMessage(s.message);
+    if (email && message) {
+      var key = email + "\u0000" + message;
+      if (seenMessages[key]) duplicateIds[s.id] = 1;
+      else seenMessages[key] = 1;
+    }
+  });
+  submissions.forEach(function (s) {
+    var message = s.message;
+    var reason = spamReason(message);
+    if (reason !== null) {
+      findings.push(F(s.id, "spam-pattern", "error", reason));
+      spamIds[s.id] = 1;
+    }
+    var links = countLinks(message);
+    if (links > o.maxLinks) {
+      findings.push(F(s.id, "link-drop", "error",
+        "message contains " + links + " links, past the " + o.maxLinks + " link limit"));
+      spamIds[s.id] = 1;
+    } else if (links >= 1) {
+      findings.push(F(s.id, "link-in-message", "warning",
+        "message contains " + links + " link" + (links > 1 ? "s" : "") + ", so check it before replying"));
+    }
+    if (tooFastIds[s.id] !== undefined) {
+      findings.push(F(s.id, "too-fast-submission", "error",
+        "submission arrived " + fmtF(tooFastIds[s.id], 0) + " seconds after the previous one from the same sender, faster than the " +
+        o.minSeconds + " second minimum for a human"));
+    }
+    if (duplicateIds[s.id]) {
+      findings.push(F(s.id, "duplicate-submission", "error",
+        "the same sender sent the same message before, so this is a duplicate submission"));
+    }
+    var email = s.email.trim().toLowerCase();
+    if (email && s.submitted !== null) {
+      var inWindow = submissions.filter(function (item) {
+        return item.email.trim().toLowerCase() === email && item.submitted !== null &&
+          item.submitted.micro <= s.submitted.micro &&
+          Number(s.submitted.micro - item.submitted.micro) / 1000000 <= o.burstHours * 3600.0;
+      });
+      if (inWindow.length >= o.burstCount) {
+        findings.push(F(s.id, "submission-burst", "warning",
+          "this is submission " + inWindow.length + " from this sender within " + o.burstHours + " hours"));
+      }
+    }
+    var words = String(message).match(WORD_PATTERN) || [];
+    if (!message) {
+      findings.push(F(s.id, "empty-message", "warning", "submission has no message, so there is nothing to answer"));
+    } else if (words.length < o.minWords) {
+      findings.push(F(s.id, "short-message", "warning",
+        "message has only " + words.length + " word" + (words.length !== 1 ? "s" : "") +
+        ", past the " + o.minWords + " word minimum, so it may be a throwaway submission"));
+    }
+    if (!spamIds[s.id] && s.answered === null && s.submitted !== null) {
+      var ageHours = hoursBetween(s.submitted, asOf);
+      if (ageHours > o.unansweredDays * 24.0) {
+        findings.push(F(s.id, "unanswered-lead-overdue", "error",
+          "genuine lead has waited " + fmtF(ageHours, 1) + " hours with no answer, past the " +
+          Math.trunc(o.unansweredDays) + " day limit"));
+      } else if (ageHours > UNANSWERED_WARNING_HOURS) {
+        findings.push(F(s.id, "unanswered-lead", "warning",
+          "genuine lead has waited " + fmtF(ageHours, 1) + " hours with no answer"));
+      }
+    }
+  });
+  return findings;
+}
+function avgOrNull(values) {
+  return values.length ? values.reduce(function (a, b) { return a + b; }, 0) / values.length : null;
+}
+function summarize(submissions, findings, asOf) {
+  var errors = findings.filter(function (f) { return f.severity === "error"; }).length;
+  var warnings = findings.length - errors;
+  var spamIds = {};
+  findings.forEach(function (f) {
+    if (f.rule === "spam-pattern" || f.rule === "link-drop") spamIds[f.submission] = 1;
+  });
+  var spam = Object.keys(spamIds).length;
+  var unanswered = 0, answered = 0, answerTimes = [];
+  submissions.forEach(function (s) {
+    if (s.answered !== null) {
+      answered += 1;
+      if (!spamIds[s.id]) {
+        var value = hoursBetween(s.submitted, s.answered);
+        if (value !== null && value >= 0 && s.submitted !== null && s.submitted.micro <= asOf.micro) answerTimes.push(value);
+      }
+    } else if (!spamIds[s.id]) unanswered += 1;
+  });
+  var spamRate = submissions.length ? spam / submissions.length * 100.0 : 0.0;
+  var forms = {};
+  submissions.forEach(function (s) {
+    var key = s.form || "(no form)";
+    (forms[key] = forms[key] || []).push(s);
+  });
+  var perForm = Object.keys(forms).sort().map(function (form) {
+    var list = forms[form];
+    var times = [];
+    list.forEach(function (s) {
+      if (!spamIds[s.id]) {
+        var value = hoursBetween(s.submitted, s.answered);
+        if (value !== null && value >= 0 && s.submitted !== null && s.submitted.micro <= asOf.micro) times.push(value);
+      }
+    });
+    return { form: form, submissions: list.length,
+      spam: list.filter(function (s) { return spamIds[s.id]; }).length,
+      unanswered: list.filter(function (s) { return s.answered === null && !spamIds[s.id]; }).length,
+      answered: list.filter(function (s) { return s.answered !== null; }).length,
+      averageAnswer: avgOrNull(times) };
+  });
+  return { submissions: submissions.length, findings: findings.length, errors: errors,
+    warnings: warnings, spam: spam, genuine: submissions.length - spam,
+    unanswered: unanswered, answered: answered, averageAnswer: avgOrNull(answerTimes),
+    spamRate: spamRate, perForm: perForm };
+}
+function formatHours(value) { return value === null ? "n/a" : fmtF(value, 1) + " hours"; }
+function renderText(submissions, findings, summary) {
+  var lines = findings.map(findingStr);
+  lines.push("");
+  lines.push("Submissions: " + summary.submissions + ", findings: " + summary.findings +
+    ", errors: " + summary.errors + ", warnings: " + summary.warnings);
+  lines.push("Spam: " + summary.spam + ", genuine: " + summary.genuine +
+    ", unanswered: " + summary.unanswered + ", answered: " + summary.answered);
+  lines.push("Average time to answer: " + formatHours(summary.averageAnswer) +
+    ", spam rate: " + fmtF(summary.spamRate, 1) + "%");
+  lines.push("");
+  lines.push("Per-form summary:");
+  summary.perForm.forEach(function (row) {
+    lines.push(row.form + ": " + row.submissions + " submissions, " + row.spam + " spam, " +
+      row.unanswered + " unanswered, " + row.answered + " answered, average answer " +
+      formatHours(row.averageAnswer));
+  });
+  if (summary.findings === 0) { lines.push(""); lines.push("All submissions clean."); }
+  return lines.join("\n") + "\n";
+}
+function optInt(v, def) {
+  if (v === undefined || v === null || v === "") return def;
+  var n = Number(v);
+  return isFinite(n) ? Math.trunc(n) : def;
+}
+function optFloat(v, def) {
+  if (v === undefined || v === null || v === "") return def;
+  var n = Number(v);
+  return isFinite(n) ? n : def;
+}
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var o = {
+    minSeconds: optInt(options.minSeconds, 5),
+    maxLinks: optInt(options.maxLinks, 2),
+    unansweredDays: optFloat(options.unansweredDays, 3),
+    minWords: optInt(options.minWords, 3),
+    burstCount: optInt(options.burstCount, 3),
+    burstHours: optInt(options.burstHours, 24)
+  };
+  if (o.minSeconds < 0) return "ERROR: --min-seconds must be at least 0\n";
+  if (o.maxLinks < 0) return "ERROR: --max-links must be at least 0\n";
+  if (o.unansweredDays < 0) return "ERROR: --unanswered-days must be at least 0\n";
+  if (o.minWords < 0) return "ERROR: --min-words must be at least 0\n";
+  if (o.burstCount < 2) return "ERROR: --burst-count must be at least 2\n";
+  if (o.burstHours < 1) return "ERROR: --burst-hours must be at least 1\n";
+  var asOf;
+  if (options.asOf === undefined || options.asOf === null || String(options.asOf).trim() === "") asOf = nowTs();
+  else {
+    asOf = parseTimestamp(String(options.asOf));
+    if (asOf === null) return "ERROR: --as-of " + pyRepr(String(options.asOf)) + " is not a readable date\n";
+  }
+  var parsed;
+  try { parsed = parseCsv(inputText || "", asOf); }
+  catch (e) { return "ERROR: " + e.message + "\n"; }
+  var findings = parsed.findings.concat(audit(parsed.submissions, asOf, o));
+  var summary = summarize(parsed.submissions, findings, asOf);
+  return renderText(parsed.submissions, findings, summary);
+};
+</script>
+<script>
+var SAMPLE = `submission_id,form,name,email,message,submitted_at,answered_at,ip
+F-101,Contact,Sarah Miller,sarah@example.com,"Hi, I need a quote for a new company website with five pages. Please email me your pricing.",2026-11-17 09:00,2026-11-17 10:30,203.0.113.10
+F-102,Contact,John Carter,john@example.com,"Can you fix my slow WordPress site? It takes ten seconds to load.",2026-11-16 09:00,2026-11-16 12:00,203.0.113.11
+F-103,Quote Request,Priya Nair,priya@example.com,"Please send a quote for an online store with twenty products and payment setup.",2026-11-14 09:00,,203.0.113.12
+F-104,Contact,David Lee,david@example.com,"I would like help moving my blog to a new host next week.",2026-11-13 09:00,,203.0.113.13
+F-105,Contact,Spam Bot,seo@spammy.biz,"Buy cheap SEO services guaranteed ranking number one Google fast results",2026-11-17 08:00,,198.51.100.5
+F-106,Contact,Link Dropper,links@spammy.biz,"Check out http://spam1.example.com and http://spam2.example.com and http://spam3.example.com for great deals",2026-11-17 08:05,,198.51.100.6
+F-107,Contact,Fast Bot,fast@botmail.example,"Hello I need a website",2026-11-17 09:00:00,,198.51.100.7
+F-108,Contact,Fast Bot,fast@botmail.example,"Hello I need a website now",2026-11-17 09:00:03,,198.51.100.7
+F-109,Contact,Emma Wilson,emma@example.com,"Please call me about updating my shop opening hours on the website.",2026-11-17 09:00,2026-11-17 09:45,203.0.113.14
+F-110,Contact,Sarah Miller,sarah@example.com,"Hi, I need a quote for a new company website with five pages. Please email me your pricing.",2026-11-16 10:00,,203.0.113.10
+F-111,Contact,Tom Baker,tom@example.com,"Hi",2026-11-17 11:00,2026-11-17 11:30,203.0.113.15
+F-112,Quote Request,Lisa Green,lisa@example.com,"Can you build me a booking site? See my current site https://lisa.example.com for reference.",2026-11-17 12:00,2026-11-17 13:00,203.0.113.16
+F-113,Contact,Bad Date,baddate@example.com,"Need help with my site.",not-a-date,,203.0.113.17
+F-114,Contact,Future Person,future@example.com,"Looking for a redesign in January.",2026-12-01 09:00,,203.0.113.18
+F-115,Contact,Impossible,imp@example.com,"Question about hosting.",2026-11-17 10:00,2026-11-16 09:00,203.0.113.19
+F-101,Contact,Ana,ana@example.com,"Another message here for testing purposes.",2026-11-17 09:00,2026-11-17 10:00,203.0.113.20
+F-116,Contact,Malformed,mal@example.com,"Short message.",2026-11-17 09:00,,203.0.113.21,extra-field
+,Contact,No ID,noid@example.com,"I need help with my contact form.",2026-11-17 09:00,2026-11-17 10:00,203.0.113.22
+F-117,Contact,No Email,,"Please help me fix my broken checkout page today.",2026-11-17 09:00,2026-11-17 10:00,203.0.113.23
+F-118,Contact,Bad Email,not-an-email,"My site is down and I need help now.",2026-11-17 09:00,,203.0.113.24
+F-119,Contact,Burst One,burst@example.com,"First message about my website redesign project.",2026-11-17 08:00,2026-11-17 09:00,203.0.113.25
+F-120,Contact,Burst One,burst@example.com,"Second message about my website redesign project.",2026-11-17 08:30,2026-11-17 09:30,203.0.113.25
+F-121,Contact,Burst One,burst@example.com,"Third message about my website redesign project.",2026-11-17 09:00,2026-11-17 10:00,203.0.113.25
+F-122,Contact,All Caps,caps@example.com,"PLEASE HELP ME FIX MY WEBSITE IT IS BROKEN AND I NEED IT TODAY",2026-11-17 14:00,,203.0.113.26
+F-123,Contact,Keyword Stuffer,stuff@example.com,"website website website website design help please",2026-11-17 15:00,,203.0.113.27
+`;
+var SAMPLE_CLEAN = `submission_id,form,name,email,message,submitted_at,answered_at,ip
+F-301,Contact,Sarah Miller,sarah@example.com,"Hi, I need a quote for a new company website with five pages. Please email me your pricing.",2026-11-17 09:00,2026-11-17 10:30,203.0.113.10
+F-302,Contact,John Carter,john@example.com,"Can you fix my slow WordPress site? It takes ten seconds to load.",2026-11-16 09:00,2026-11-16 12:00,203.0.113.11
+F-303,Quote Request,Priya Nair,priya@example.com,"Please send a quote for an online store with twenty products and payment setup.",2026-11-17 09:00,2026-11-17 11:00,203.0.113.12
+F-304,Contact,Emma Wilson,emma@example.com,"Please call me about updating my shop opening hours on the website.",2026-11-17 09:00,2026-11-17 09:45,203.0.113.14
+F-305,Contact,David Lee,david@example.com,"I would like help moving my blog to a new host next week.",2026-11-17 10:00,2026-11-17 11:00,203.0.113.13
+`;
+var SAMPLE_WARN = `submission_id,form,name,email,message,submitted_at,answered_at,ip
+F-401,Quote Request,Priya Nair,priya@example.com,"Please send a quote for an online store with twenty products and payment setup.",2026-11-16 09:00,,203.0.113.12
+F-402,Contact,Tom Baker,tom@example.com,"Hi",2026-11-17 11:00,2026-11-17 11:30,203.0.113.15
+F-403,Quote Request,Lisa Green,lisa@example.com,"Can you build me a booking site? See my current site https://lisa.example.com for reference.",2026-11-17 12:00,2026-11-17 13:00,203.0.113.16
+`;
+var inputEl = document.getElementById("input");
+var outEl = document.getElementById("out");
+var lastReport = "";
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result || ""); };
+  reader.readAsText(f);
+});
+document.getElementById("sample").addEventListener("click", function () { inputEl.value = SAMPLE; });
+document.getElementById("sample-clean").addEventListener("click", function () { inputEl.value = SAMPLE_CLEAN; });
+document.getElementById("sample-warn").addEventListener("click", function () { inputEl.value = SAMPLE_WARN; });
+document.getElementById("run").addEventListener("click", function () {
+  var options = {
+    minSeconds: document.getElementById("opt-seconds").value,
+    maxLinks: document.getElementById("opt-links").value,
+    unansweredDays: document.getElementById("opt-days").value,
+    minWords: document.getElementById("opt-words").value,
+    burstCount: document.getElementById("opt-burst-count").value,
+    burstHours: document.getElementById("opt-burst-hours").value,
+    asOf: document.getElementById("opt-asof").value
+  };
+  try {
+    lastReport = window.runTool(inputEl.value, options);
+    outEl.textContent = lastReport;
+  } catch (e) {
+    lastReport = "ERROR: " + e.message + "\n";
+    outEl.textContent = lastReport;
+  }
+});
+document.getElementById("download").addEventListener("click", function () {
+  var text = lastReport || outEl.textContent;
+  var blob = new Blob([text], { type: "text/plain" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "wp-form-report.txt";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
